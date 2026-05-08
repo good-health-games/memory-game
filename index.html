@@ -28,22 +28,26 @@
 
     <script>
         // --- 1. PWA 設定 (指向你的圖片檔案) ---
+        // 💡 修正：將相對路徑轉換為完整的絕對網址，確保手機一定能找到圖片
+        const iconUrl = new URL('logo.png', window.location.href).href;
+        const startUrl = new URL('./index.html', window.location.href).href;
+
         const manifest = {
             "name": "圖像記憶遊戲",
             "short_name": "記憶遊戲",
-            "start_url": "./index.html",
+            "start_url": startUrl,
             "display": "standalone",
             "background_color": "#203656",
             "theme_color": "#203656",
             "icons": [
                 {
-                    "src": "logo.png", // 💡 請確保你上傳到 GitHub 的圖片檔名為 logo.png
+                    "src": iconUrl, // 已經自動轉換為完整網址
                     "sizes": "512x512",
                     "type": "image/png",
                     "purpose": "any maskable"
                 },
                 {
-                    "src": "logo.png",
+                    "src": iconUrl,
                     "sizes": "192x192",
                     "type": "image/png"
                 }
