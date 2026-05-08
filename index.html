@@ -219,25 +219,25 @@
                                 <h2 class="text-xl font-bold text-slate-800">請按剛才的順序選出 3 個圖形</h2>
                             </div>
                             
-                            <!-- 玩家選擇區 -->
+                            <!-- 玩家選擇區 (移除了 hover 紅色邊框，避免手機殘留狀態) -->
                             <div class="flex justify-center gap-4 mb-8 h-32">
                                 ${[0, 1, 2].map(i => {
                                     const selected = state.playerSelection[i];
                                     return `
-                                        <div ${selected ? `onclick="deselectShape(${i})"` : ''} class="w-28 h-28 rounded-2xl border-2 flex items-center justify-center transition-all ${selected ? 'border-blue-500 bg-blue-50 cursor-pointer active:scale-95 hover:border-red-400 hover:bg-red-50' : 'border-dashed border-slate-300 bg-slate-50'}">
+                                        <div ${selected ? `onclick="deselectShape(${i})"` : ''} class="w-28 h-28 rounded-2xl border-2 flex items-center justify-center transition-all ${selected ? 'border-blue-500 bg-blue-50 cursor-pointer active:scale-95' : 'border-dashed border-slate-300 bg-slate-50'}">
                                             ${selected ? `<div class="w-20 h-20 pointer-events-none">${selected.svg}</div>` : `<span class="text-slate-300 text-2xl font-bold">${i+1}</span>`}
                                         </div>
                                     `;
                                 }).join('')}
                             </div>
                             
-                            <!-- 選項區 -->
+                            <!-- 選項區 (移除了 hover 藍色邊框，改為純點擊反白) -->
                             <div class="grid grid-cols-3 gap-4 mb-6">
                                 ${state.recallOptions.map(shape => {
                                     const isSelected = state.playerSelection.find(s => s.id === shape.id);
                                     return `
                                         <div class="w-full aspect-square">
-                                            <button onclick="selectShape('${shape.id}')" ${isSelected ? 'disabled' : ''} class="shape-btn w-full h-full bg-white border-2 border-slate-200 rounded-2xl p-4 flex items-center justify-center shadow-sm ${isSelected ? 'opacity-30 cursor-not-allowed' : 'hover:border-blue-400 active:bg-slate-50'} focus:outline-none focus:ring-0">
+                                            <button onclick="selectShape('${shape.id}')" ${isSelected ? 'disabled' : ''} class="shape-btn w-full h-full bg-white border-2 border-slate-200 rounded-2xl p-4 flex items-center justify-center shadow-sm ${isSelected ? 'opacity-30 cursor-not-allowed' : 'active:bg-slate-50'} focus:outline-none focus:ring-0">
                                                 <div class="w-full h-full pointer-events-none flex items-center justify-center">${shape.svg}</div>
                                             </button>
                                         </div>
