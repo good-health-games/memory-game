@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>圖像記憶遊戲</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 避免手機點擊時出現高亮 */
+        * { -webkit-tap-highlight-color: transparent; }
+        .shape-btn { transition: transform 0.1s ease; }
+        .shape-btn:active { transform: scale(0.95); }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <!-- 動態產生 PWA Manifest -->
+    <link id="manifest-link" rel="manifest" href="">
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans min-h-screen flex items-center justify-center p-4 selection:bg-none">
+
+    <div id="app" class="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden min-h-[500px] flex flex-col relative">
+        <!-- 內容由 JavaScript 動態渲染 -->
+    </div>
+
+    <script>
+        // --- 1. PWA 設定 (Manifest & Service Worker) ---
+        const manifest = {
+            "name": "圖像記憶遊戲",
+            "short_name": "記憶遊戲",
+            "start_url": "./",
+            "display": "standalone",
+            "background_color": "#ffffff",
+            "theme_color": "#3b82f6",
+            "icons": [{
+                "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzNiODJmNiIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjMwIiBmaWxsPSIjZmZmIi8+PC9zdmc+",
+                "sizes": "192x192",
+                "type": "image/svg+xml"
+            }]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+        document.getElementById('manifest-link').href = URL.createObjectURL(manifestBlob);
+
+        const swCode = `
+            self.addEventListener('install', (e) => self.skipWaiting());
+            self.addEventListener('fetch', (e) => {
+                e.respondWith(fetch(e.request).catch(() => new Response('請連接網路以進行遊戲。')));
+            });
+        `;
+        const swBlob = new Blob([swCode], { type: 'application/javascript' });
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(console.error);
+        }
+
+        // --- 2. 遊戲資料設定 ---
+        const TOTAL_ROUNDS = 10;
+        const MEMORY_TIME = 10; // 10秒記憶時間
+        
+        const shapesPool = [
+            { id: 'circle', name: '圓形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-red-500 fill-current"><circle cx="50" cy="50" r="45"/></svg>' },
+            { id: 'triangle', name: '三角形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-blue-500 fill-current"><polygon points="50,5 95,95 5,95"/></svg>' },
+            { id: 'square', name: '正方形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-green-500 fill-current"><rect x="10" y="10" width="80" height="80" rx="10"/></svg>' },
+            { id: 'star', name: '星形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-yellow-400 fill-current"><polygon points="50,5 61,40 98,40 68,62 79,95 50,75 21,95 32,62 2,40 39,40"/></svg>' },
+            { id: 'diamond', name: '菱形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-purple-500 fill-current"><polygon points="50,5 95,50 50,95 5,50"/></svg>' },
+            { id: 'heart', name: '心形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-pink-500 fill-current"><path d="M50,88 C50,88 10,60 10,30 C10,15 25,5 40,15 C45,18 50,25 50,25 C50,25 55,18 60,15 C75,5 90,15 90,30 C90,60 50,88 50,88 Z"/></svg>' },
+            { id: 'hexagon', name: '六角形', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-orange-500 fill-current"><polygon points="25,5 75,5 95,50 75,95 25,95 5,50"/></svg>' },
+            { id: 'cross', name: '十字', svg: '<svg viewBox="0 0 100 100" class="w-full h-full text-teal-500 fill-current"><polygon points="35,5 65,5 65,35 95,35 95,65 65,65 65,95 35,95 35,65 5,65 5,35 35,35"/></svg>' }
+        ];
+
+        // --- 3. 遊戲狀態 ---
+        let state = {
+            view: 'START', // START, PRE_MEMORIZE, MEMORIZE, RECALL, RESULT, END
+            lastView: '',  // 新增：紀錄上一次的畫面，用來判斷是否需要播放過場動畫
+            round: 1,
+            roundScores: [], // 陣列記錄每題分數，取代原本的單一 score
+            targetSequence: [],
+            recallOptions: [],
+            playerSelection: [],
+            timeLeft: MEMORY_TIME,
+            timerInterval: null,
+            showAnswer: false, // 用於控制是否顯示答案
+            errorReason: '', // 紀錄答錯原因
+            hasRetried: false // 紀錄是否已經重新作答(無分)
+        };
+
+        const appEl = document.getElementById('app');
+
+        // --- 4. 工具函數 ---
+        const shuffle = (array) => [...array].sort(() => Math.random() - 0.5);
+
+        // --- 5. 遊戲邏輯與渲染 ---
+        function render() {
+            let content = '';
+            // 計算目前總分
+            const currentScore = state.roundScores.reduce((a, b) => a + b, 0);
+            
+            // 判斷是否跨畫面切換，決定是否加入 fade-in 動畫
+            const animClass = state.lastView !== state.view ? 'fade-in' : '';
+            state.lastView = state.view; // 更新紀錄
+            
+            // 頂部狀態列 (除了首頁和結束頁)
+            if (state.view !== 'START' && state.view !== 'END') {
+                content += `
+                    <div class="bg-blue-600 text-white rounded-t-3xl flex flex-col">
+                        <!-- 導覽列 (首頁、上一題) -->
+                        <div class="flex justify-between items-center px-5 pt-4 pb-1 text-sm font-medium text-blue-200">
+                            <button onclick="goHome()" class="hover:text-white flex items-center gap-1 transition-colors active:scale-95">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                                首頁
+                            </button>
+                            ${state.round > 1 ? `
+                            <button onclick="prevRound()" class="hover:text-white flex items-center gap-1 transition-colors active:scale-95">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                                上一題
+                            </button>
+                            ` : '<span></span>'}
+                        </div>
+                        <!-- 主要標題列 -->
+                        <div class="px-5 pb-4 pt-2 flex justify-between items-center">
+                            <div class="font-bold text-lg tracking-wide">第 ${state.round} / ${TOTAL_ROUNDS} 題</div>
+                            <div class="font-bold text-base bg-blue-700/50 px-3 py-1.5 rounded-xl shadow-inner border border-blue-500/50">分數: ${currentScore}</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            switch(state.view) {
+                case 'START':
+                    content += `
+                        <div class="flex-1 flex flex-col w-full bg-blue-50 p-4 pt-5 ${animClass}">
+                            <!-- 深藍色實心質感卡片 (完美還原截圖設計) -->
+                            <div class="w-full bg-[#203656] text-white flex flex-col items-center pt-8 pb-8 px-4 rounded-[1.8rem] shadow-sm relative">
+                                <!-- Logo -->
+                                <div class="mb-4">
+                                    <svg viewBox="0 0 100 115" class="w-14 h-16 mx-auto" fill="none">
+                                        <path
+                                            d="M 12 5 L 88 5 Q 95 5 95 12 L 95 60 A 45 45 0 0 1 5 60 L 5 12 Q 5 5 12 5 Z"
+                                            stroke="white"
+                                            stroke-width="5"
+                                        />
+                                        <text x="50" y="70" fill="white" font-family="sans-serif" font-weight="bold" font-size="48" text-anchor="middle">GH</text>
+                                    </svg>
+                                </div>
+                                
+                                <!-- 康傑教育機構 -->
+                                <div class="mb-5 text-center">
+                                    <h2 class="text-xl font-bold tracking-[0.2em] mb-1">康傑教育機構</h2>
+                                    <p class="text-[0.45rem] tracking-[0.05em] uppercase opacity-90 font-medium">Good Health Early Childhood Education Group</p>
+                                </div>
+
+                                <!-- 幼稚園/幼兒中心 -->
+                                <div class="mb-5 text-center">
+                                    <h3 class="text-[1.05rem] font-bold tracking-[0.15em] mb-1">康傑中英文幼稚園</h3>
+                                    <h3 class="text-[1.05rem] font-bold tracking-[0.15em] mb-2">康傑幼兒中心</h3>
+                                    <p class="text-[0.55rem] opacity-80 leading-relaxed font-medium">Good Health Anglo-Chinese Kindergarten<br>Good Health Child Care Centre</p>
+                                </div>
+
+                                <!-- Divider -->
+                                <div class="w-full max-w-[260px] h-[1px] bg-white/20 my-4"></div>
+
+                                <!-- 遊戲標題 -->
+                                <div class="text-center mt-2">
+                                    <h1 class="text-2xl font-bold tracking-[0.15em] mb-2">圖像記憶遊戲</h1>
+                                    <p class="text-[0.65rem] tracking-[0.2em] text-[#a8c7fa] uppercase font-bold">Image Memory Game</p>
+                                </div>
+                            </div>
+
+                            <!-- 遊戲規則 (白底區域) -->
+                            <div class="mt-6 mb-auto px-4">
+                                <ol class="list-decimal pl-4 space-y-1.5 font-medium text-[0.8rem] text-slate-600 leading-relaxed">
+                                    <li>記住出現的 <span class="text-[#203656] font-bold">3 個圖形</span>與<span class="text-[#203656] font-bold">順序</span>。</li>
+                                    <li>你有 10 秒的記憶時間。</li>
+                                    <li>從 6 個選項中，按正確順序選出剛才的圖形。</li>
+                                    <li>答對得 10 分，答錯 0 分。</li>
+                                </ol>
+                            </div>
+
+                            <!-- 開始遊戲按鈕 -->
+                            <button onclick="prepareRound()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform text-lg mt-6">
+                                開始遊戲
+                            </button>
+                        </div>
+                    `;
+                    break;
+
+                case 'PRE_MEMORIZE':
+                    content += `
+                        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center ${animClass}">
+                            <h2 class="text-2xl font-bold text-slate-800 mb-4">第 ${state.round} 題準備</h2>
+                            <p class="text-slate-600 mb-8">準備好後請點擊開始，你將有 10 秒鐘記住圖形。</p>
+                            <button onclick="beginMemorize()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform text-lg">
+                                開始記憶
+                            </button>
+                        </div>
+                    `;
+                    break;
+
+                case 'MEMORIZE':
+                    const progressWidth = (state.timeLeft / MEMORY_TIME) * 100;
+                    content += `
+                        <div class="flex-1 flex flex-col p-6 ${animClass}">
+                            <div class="text-center mb-8 mt-4">
+                                <h2 class="text-xl font-bold text-slate-800 mb-2">請記住以下圖形順序 (左至右)</h2>
+                                <div id="timer-text" class="text-3xl font-black text-blue-600">${state.timeLeft}s</div>
+                            </div>
+                            
+                            <!-- 進度條 -->
+                            <div class="w-full bg-slate-200 rounded-full h-3 mb-10 overflow-hidden">
+                                <div id="progress-bar" class="bg-blue-500 h-3 rounded-full transition-all duration-1000 linear" style="width: ${progressWidth}%"></div>
+                            </div>
+
+                            <!-- 目標圖形 -->
+                            <div class="flex justify-center gap-4">
+                                ${state.targetSequence.map((shape, idx) => `
+                                    <div class="flex flex-col items-center">
+                                        <div class="w-32 h-32 bg-slate-50 p-4 rounded-3xl shadow-md border border-slate-200">
+                                            ${shape.svg}
+                                        </div>
+                                        <span class="mt-3 text-lg text-slate-500 font-bold">${idx + 1}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'RECALL':
+                    content += `
+                        <div class="flex-1 flex flex-col p-6 ${animClass}">
+                            <div class="text-center mb-6 mt-2">
+                                <h2 class="text-xl font-bold text-slate-800">請按剛才的順序選出 3 個圖形</h2>
+                            </div>
+                            
+                            <!-- 玩家選擇區 -->
+                            <div class="flex justify-center gap-4 mb-8 h-32">
+                                ${[0, 1, 2].map(i => {
+                                    const selected = state.playerSelection[i];
+                                    return `
+                                        <div 
+                                            ${selected ? `onclick="deselectShape(${i})"` : ''}
+                                            class="w-28 h-28 rounded-2xl border-2 flex items-center justify-center transition-all ${selected ? 'border-blue-500 bg-blue-50 cursor-pointer active:scale-95 hover:border-red-400 hover:bg-red-50' : 'border-dashed border-slate-300 bg-slate-50'}"
+                                        >
+                                            ${selected ? `<div class="w-20 h-20 pointer-events-none">${selected.svg}</div>` : `<span class="text-slate-300 text-2xl font-bold">${i+1}</span>`}
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+
+                            <!-- 選項區 (強制正方形) -->
+                            <div class="grid grid-cols-3 gap-4 mb-6">
+                                ${state.recallOptions.map(shape => {
+                                    // 檢查是否已被選取
+                                    const isSelected = state.playerSelection.find(s => s.id === shape.id);
+                                    return `
+                                        <div class="w-full aspect-square">
+                                            <button 
+                                                onclick="selectShape('${shape.id}')"
+                                                ${isSelected ? 'disabled' : ''}
+                                                class="shape-btn w-full h-full bg-white border-2 border-slate-200 rounded-2xl p-4 flex items-center justify-center shadow-sm ${isSelected ? 'opacity-30 cursor-not-allowed' : 'hover:border-blue-400 active:bg-slate-50'}"
+                                            >
+                                                <div class="w-full h-full pointer-events-none flex items-center justify-center">${shape.svg}</div>
+                                            </button>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                            
+                            <!-- 按鈕區：重新看題目、重設與檢查答案 -->
+                            <div class="mt-auto pt-2 flex flex-col gap-3">
+                                <button 
+                                    onclick="reWatchQuestion()"
+                                    class="w-full font-bold py-3 rounded-xl transition-all text-base border-2 border-blue-300 text-blue-600 hover:bg-blue-50 active:scale-95"
+                                >
+                                    重新查看題目
+                                </button>
+                                <button 
+                                    onclick="resetSelection()"
+                                    ${state.playerSelection.length > 0 ? '' : 'disabled'}
+                                    class="w-full font-bold py-3 rounded-xl transition-all text-base border-2 ${state.playerSelection.length > 0 ? 'border-slate-300 text-slate-600 hover:bg-slate-50 active:scale-95' : 'border-slate-100 text-slate-300 cursor-not-allowed bg-transparent'}"
+                                >
+                                    重設選項
+                                </button>
+                                <button 
+                                    onclick="checkResult()"
+                                    ${state.playerSelection.length === 3 ? '' : 'disabled'}
+                                    class="w-full font-bold py-4 rounded-2xl shadow-lg transition-all text-lg ${state.playerSelection.length === 3 ? 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}"
+                                >
+                                    檢查答案
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'RESULT':
+                    const isCorrect = JSON.stringify(state.targetSequence.map(s=>s.id)) === JSON.stringify(state.playerSelection.map(s=>s.id));
+                    content += `
+                        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center ${animClass}">
+                            <div class="w-24 h-24 mb-6 ${isCorrect ? 'text-green-500' : 'text-red-500'}">
+                                ${isCorrect ? 
+                                    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-full h-full"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>` : 
+                                    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-full h-full"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>`
+                                }
+                            </div>
+                            <h2 class="text-3xl font-bold mb-2 ${isCorrect ? 'text-green-600' : 'text-red-600'}">
+                                ${isCorrect ? '+10 分！答對了' : '答錯了！'}
+                            </h2>
+                            <p class="text-slate-500 mb-8 font-medium">
+                                ${isCorrect ? '太棒了，記憶力真好！' : (state.showAnswer ? '正確順序如下：' : state.errorReason)}
+                            </p>
+                            
+                            ${isCorrect ? `
+                                <button onclick="nextRound()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform text-lg">
+                                    ${state.round < TOTAL_ROUNDS ? '下一題' : '查看最終成績'}
+                                </button>
+                            ` : `
+                                <div class="flex flex-col gap-3 w-full">
+                                    ${state.showAnswer ? `
+                                        <div class="flex justify-center gap-4 mb-6">
+                                            ${state.targetSequence.map(shape => `
+                                                <div class="w-28 h-28 bg-slate-50 p-4 rounded-3xl shadow-sm border border-slate-200">${shape.svg}</div>
+                                            `).join('')}
+                                        </div>
+                                        <button onclick="nextRound()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform text-lg">
+                                            ${state.round < TOTAL_ROUNDS ? '下一題' : '查看最終成績'}
+                                        </button>
+                                    ` : `
+                                        <button onclick="retryRound()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform text-lg">
+                                            重新作答 (無分)
+                                        </button>
+                                        <button onclick="revealAnswer()" class="w-full bg-slate-500 hover:bg-slate-600 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform text-lg">
+                                            顯示答案
+                                        </button>
+                                        <button onclick="nextRound()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform text-lg">
+                                            直接下一題
+                                        </button>
+                                    `}
+                                </div>
+                            `}
+                        </div>
+                    `;
+                    break;
+
+                case 'END':
+                    let comment = "";
+                    if(currentScore === 100) comment = "完美！你的記憶力異於常人！🏆";
+                    else if(currentScore >= 70) comment = "很厲害！差一點就滿分了！⭐";
+                    else if(currentScore >= 40) comment = "還不錯，再多練習幾次吧！👍";
+                    else comment = "有點可惜，腦袋需要醒一醒囉！☕";
+
+                    content += `
+                        <div class="flex-1 flex flex-col items-center justify-center p-8 text-center ${animClass}">
+                            <h1 class="text-4xl font-black text-slate-800 mb-2">遊戲結束</h1>
+                            <div class="text-6xl font-black text-blue-600 my-6">${currentScore} <span class="text-2xl text-slate-500 font-bold">分</span></div>
+                            <p class="text-xl text-slate-600 mb-10 font-medium">${comment}</p>
+                            
+                            <button onclick="resetGame()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-transform text-lg flex items-center justify-center gap-2">
+                                <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+                                再玩一次
+                            </button>
+                        </div>
+                    `;
+                    break;
+            }
+
+            appEl.innerHTML = content;
+        }
+
+        // --- 6. 遊戲流程控制 ---
+        window.prepareRound = function() {
+            // 從池中隨機挑選 3 個作為目標
+            const shuffledPool = shuffle(shapesPool);
+            state.targetSequence = shuffledPool.slice(0, 3);
+            
+            // 準備回憶階段的 6 個選項 (包含目標 3 個 + 額外隨機 3 個)
+            const remainingPool = shuffledPool.slice(3);
+            state.recallOptions = shuffle([...state.targetSequence, ...remainingPool.slice(0, 3)]);
+            
+            state.playerSelection = [];
+            state.timeLeft = MEMORY_TIME;
+            state.showAnswer = false;
+            state.errorReason = '';
+            state.hasRetried = false; // 新回合重置重答狀態
+            state.view = 'PRE_MEMORIZE'; // 進入準備畫面
+            
+            render();
+        }
+
+        window.beginMemorize = function() {
+            state.view = 'MEMORIZE';
+            render(); // 第一次渲染框架
+
+            // 開始計時，不呼叫 render，而是直接更新 DOM 避免閃爍
+            state.timerInterval = setInterval(() => {
+                state.timeLeft--;
+                
+                const timerEl = document.getElementById('timer-text');
+                const progressEl = document.getElementById('progress-bar');
+                
+                if (timerEl) timerEl.innerText = state.timeLeft + 's';
+                if (progressEl) progressEl.style.width = ((state.timeLeft / MEMORY_TIME) * 100) + '%';
+                
+                if (state.timeLeft <= 0) {
+                    clearInterval(state.timerInterval);
+                    state.view = 'RECALL';
+                    render();
+                }
+            }, 1000);
+        }
+
+        window.selectShape = function(shapeId) {
+            if (state.playerSelection.length >= 3) return;
+            
+            const shape = shapesPool.find(s => s.id === shapeId);
+            state.playerSelection.push(shape);
+            render();
+            
+            // 已移除自動結算邏輯，改由玩家點擊「檢查答案」按鈕
+        }
+
+        // 新增：取消選擇圖形的功能
+        window.deselectShape = function(index) {
+            if (state.playerSelection[index]) {
+                // 從陣列中移除被點擊的圖形
+                state.playerSelection.splice(index, 1);
+                render();
+            }
+        }
+
+        // 新增：重設所有已選圖形的功能
+        window.resetSelection = function() {
+            if (state.playerSelection.length > 0) {
+                state.playerSelection = [];
+                render();
+            }
+        }
+
+        // 新增：重新查看題目的功能
+        window.reWatchQuestion = function() {
+            state.playerSelection = []; // 清空已選答案
+            state.timeLeft = MEMORY_TIME; // 重設倒數時間
+            state.view = 'PRE_MEMORIZE'; // 退回準備畫面
+            render();
+        }
+
+        function checkResult() {
+            // 檢查順序和圖形是否完全一致
+            const isCorrect = state.targetSequence.every((targetShape, index) => {
+                return state.playerSelection[index] && targetShape.id === state.playerSelection[index].id;
+            });
+
+            if (isCorrect) {
+                // 如果沒有重答過才給分
+                if (!state.hasRetried) {
+                    state.roundScores[state.round - 1] = 10;
+                } else {
+                    state.roundScores[state.round - 1] = 0;
+                }
+                state.errorReason = '';
+            } else {
+                state.roundScores[state.round - 1] = 0; // 答錯0分
+                // 分析錯誤原因
+                const selectedIds = state.playerSelection.map(s => s.id);
+                const targetIds = state.targetSequence.map(s => s.id);
+                
+                // 檢查是否選對了所有圖形 (只是順序錯)
+                const hasAllCorrectShapes = targetIds.every(id => selectedIds.includes(id));
+                
+                if (hasAllCorrectShapes) {
+                    state.errorReason = '圖形都選對了，但是順序不對喔！';
+                } else {
+                    state.errorReason = '圖形選擇錯誤喔！';
+                }
+            }
+            
+            state.view = 'RESULT';
+            render();
+        }
+
+        window.retryRound = function() {
+            state.hasRetried = true; // 標記已重答，後續答對也無分
+            state.playerSelection = [];
+            state.view = 'RECALL';
+            render();
+        }
+
+        window.revealAnswer = function() {
+            state.showAnswer = true;
+            render();
+        }
+
+        window.nextRound = function() {
+            if (state.round < TOTAL_ROUNDS) {
+                state.round++;
+                window.prepareRound();
+            } else {
+                state.view = 'END';
+                render();
+            }
+        }
+        
+        // 新增：回首頁功能
+        window.goHome = function() {
+            clearInterval(state.timerInterval);
+            resetGame();
+        }
+
+        // 新增：上一題功能
+        window.prevRound = function() {
+            if (state.round > 1) {
+                clearInterval(state.timerInterval);
+                
+                // 清除當前與上一題的分數紀錄以防洗分
+                state.roundScores[state.round - 1] = 0;
+                state.round--;
+                state.roundScores[state.round - 1] = 0;
+                
+                window.prepareRound();
+            }
+        }
+
+        window.resetGame = function() {
+            state.round = 1;
+            state.roundScores = []; // 重置分數陣列
+            state.errorReason = '';
+            state.hasRetried = false;
+            state.view = 'START';
+            render();
+        }
+
+        // 初始化遊戲
+        render();
+
+    </script>
+</body>
+</html>
